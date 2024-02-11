@@ -1,0 +1,149 @@
+from json import load
+import tensorflow as tf
+from tensorflow.keras.layers import Input, Dense
+from tensorflow.keras.models import Model,load_model
+from tensorflow.keras.utils import to_categorical
+from tensorflow.keras.datasets import mnist
+from tensorflow.keras import metrics
+
+
+# 載入MNIST資料集
+(x_train, y_train), (x_test, y_test) = mnist.load_data()
+
+
+# 資料處理
+train_images = x_train.reshape([-1, 784]).astype('float32') / 255
+test_images = x_test.reshape([-1, 784]).astype('float32') / 255
+train_labels = to_categorical(y_train, num_classes=10)
+test_labels = to_categorical(y_test, num_classes=10)
+
+# 模型定義
+input_layer = Input(shape=(784,))
+dense_layer = Dense(64, activation='relu',name='layer_1')(input_layer)
+output_layer = Dense(10, activation='softmax')(dense_layer)
+model = Model(inputs=input_layer, outputs=output_layer)
+
+
+
+# 最佳化器和損失函數
+optimizer = tf.keras.optimizers.Adam()
+loss_fn = tf.keras.losses.CategoricalCrossentropy()
+
+# 準確率計算
+accuracy_metric = tf.keras.metrics.CategoricalAccuracy()
+
+# 準確率計算_test
+accuracy_metric_test = tf.keras.metrics.CategoricalAccuracy()
+
+#權重更新數量
+updataQuantity = 2
+
+
+@tf.function
+def train_step(x, y,updataQuantity):
+     with tf.GradientTape() as tape:
+         predictions = model(x, training=True)
+         loss = loss_fn(y, predictions)
+     #梯度、斜率
+     gradients = tape.gradient(loss, model.trainable_variables)
+    
+    
+     # 使用 TensorFlow 操作修改梯度
+     #想要梯度不變化，設定為零，(SDG) new_param = param− learning_rate×gradient
+     # param是模型的某個可訓練參數。
+     # gradient是此參數的梯度。
+     # learning_rate是學習率，一個控制梯度步長大小的超參數。
+     modified_gradients = []
+     for grad, var in zip(gradients, model.trainable_variables):
+         if 'layer_1' in var.name and 'kernel' in var.name: # 如果是第一個Dense層的權重
+            
+             mask = tf.zeros_like(grad)
+             indices = [[row, row_2] for row in range(var.shape[0]) for row_2 in range(updataQuantity) ]
+             updates = tf.ones([len(indices)])
+             updated_mask = tf.tensor_scatter_nd_update(mask,indices,updates)
+             modified_grad = grad * updated_mask
+
+             # mask = tf.ones_like(grad)
+             # modified_grad = grad * mask
+
+
+             modified_gradients.append(modified_grad)
+         elif 'layer_1' in var.name and 'bias' in var.name: # 如果是第一個Dense層的偏置
+            
+             mask = tf.zeros_like(grad)
+             indices = [[indice] for indice in range(updataQuantity)]
+             updates = tf.ones(updataQuantity)
+             mask = tf.tensor_scatter_nd_update(mask,indices,updates)
+             bias_grad = grad * mask
+
+             # mask = tf.ones_like(grad)
+             # bias_grad = grad * mask
+
+             modified_gradients.append(bias_grad)
+             # modified_gradients.append(modified_grad)
+         else:
+             modified_gradients.append(grad) # 其他層保持梯度不變
+
+     # 應用修改後的梯度
+     optimizer.apply_gradients(zip(modified_gradients, model.trainable_variables))
+
+     # 更新準確率
+     accuracy_metric.update_state(y, predictions)
+    
+
+     return loss
+
+#驗證test準確率
+@tf.function
+def test_step(x,y):
+     predictions = model(x,training = False)
+     t_loss = loss_fn(y,predictions)
+     accuracy_metric_test.update_state(y,predictions)
+     return t_loss
+
+
+best_acc = 0 #最好準確率
+Meet_the_standard_acc = 90 #達標準確率
+stop_up = 3 #沒有提升的次數
+# training_quantity = 1 #每次解開神經的數量
+best_epoch = 0
+
+# 訓練模型
+# 以一個 epoch 為例
+for epoch in range(10): 
+    
+    # 在每個epoch開始時重置準確率狀態
+    accuracy_metric.reset_states()
+    accuracy_metric_test.reset_states()
+    
+    for images, labels in tf.data.Dataset.from_tensor_slices((train_images, train_labels)).shuffle(1000).batch(128):
+        loss = train_step(images, labels,updataQuantity)
+
+    for images, labels in tf.data.Dataset.from_tensor_slices((test_images, test_labels)).shuffle(1000).batch(128):
+        loss_test = test_step(images, labels)
+
+
+    # 取得並列印準確率
+    accuracy = accuracy_metric.result().numpy()
+    accuracy_test = accuracy_metric_test.result().numpy()
+    print(f"Epoch {epoch}, Loss: {loss.numpy()}, Accuracy: {accuracy}, Accuracy_test: {accuracy_test}")
+    
+    if accuracy_test > best_acc :
+        
+        best_acc = accuracy_test
+        best_epoch = epoch
+        # print('best_acc best_epoch = ',best_acc,best_epoch)
+        model.save('tfGradientTape', save_format='tf')
+        # model.save_weights('tfGradientTape_weights', save_format='tf')
+        
+        # model = load_model('tfGradientTape')
+        # model.compile(optimizer='adam', loss='categorical_crossentropy', metrics=['accuracy'])
+    
+    elif epoch - best_epoch <= stop_up:
+        # model = load_model('tf_GradientTape.h5')
+        # updataQuantity = updataQuantity*2
+        # updataQuantity = max(min(updataQuantity,64),0)
+        print('updataQuantity = ',updataQuantity)
+
+        
+    
